@@ -10813,7 +10813,13 @@ async function sendChatMessage(toAgent) {
   if (!content) { textarea?.focus(); return }
   if (btn) btn.disabled = true
   try {
-    const from = await resolveOwnerName()
+    // The operator composes through the dashboard AS the main agent: `from`
+    // must be a registered fleet agent id (the /api/messages guard rejects any
+    // unregistered sender, e.g. the raw owner name "Karesz"), and the
+    // recipient's reply has to route back to a real agent inbox. The main
+    // agent (marveen) is the owner's proxy in the fleet; the chat renders
+    // outgoing bubbles under the owner label regardless of this routing id.
+    const from = mainAgentId()
     const freshPerTask = chatAgentSessionPolicy.get(toAgent) === 'fresh-per-task'
     let taskId = null
     if (freshPerTask) {
