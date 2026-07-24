@@ -312,7 +312,8 @@ describe('/api/messages from-authentication', () => {
   const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'routes', 'messages.ts'), 'utf8')
 
   it('imports isKnownAgent from agent-config', () => {
-    expect(src).toContain("import { isKnownAgent } from '../agent-config.js'")
+    expect(src).toMatch(/import\s*\{[^}]*\bisKnownAgent\b[^}]*\}\s*from\s*['"]\.\.\/agent-config\.js['"]/s)
+    expect(src).toMatch(/\bisKnownAgent\(/)
   })
 
   it('calls isKnownAgent with the sanitized from field', () => {

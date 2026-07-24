@@ -48,6 +48,7 @@ vi.mock('../web/voice-directive.js', () => ({
 
 vi.mock('../web/agent-config.js', () => ({
   readAgentRemoteHost: () => null,
+  readAgentSessionPolicy: () => 'continue',
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
 }))
 
@@ -55,6 +56,8 @@ vi.mock('../web/agent-process.js', () => ({
   agentSessionName: (name: string) => `agent-${name}`,
   isSessionReadyForPrompt: vi.fn(() => false),
   clearStaleParkedInput: vi.fn(() => false),
+  startAgentProcess: vi.fn(),
+  restartAgentProcess: vi.fn(),
   sendPromptToSession: vi.fn(),
   sessionExistsOnHost: (...a: unknown[]) => mockSessionExistsOnHost(...a),
 }))

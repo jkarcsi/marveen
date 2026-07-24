@@ -10332,6 +10332,7 @@ async function resolveOwnerName() {
 // === Messages page ===
 // chatAgentHasAvatar: populated from /api/agents during loadChatAgentList
 const chatAgentHasAvatar = new Map() // name -> true|false
+const chatAgentSessionPolicy = new Map() // name -> 'continue'|'fresh-per-task'
 let chatSelectedAgent = null
 
 function chatMonogramEl(agentName, size) {
@@ -10436,9 +10437,13 @@ async function loadChatAgentList() {
 
     // Populate avatar map from API data
     chatAgentHasAvatar.clear()
+    chatAgentSessionPolicy.clear()
     chatAgentHasAvatar.set(mainAgentId(), true)
     for (const a of agentsRaw) {
-      if (a.name) chatAgentHasAvatar.set(a.name, !!a.hasAvatar)
+      if (a.name) {
+        chatAgentHasAvatar.set(a.name, !!a.hasAvatar)
+        chatAgentSessionPolicy.set(a.name, a.sessionPolicy || 'continue')
+      }
     }
 
     // Build index from /api/messages/threads (per-agent, no global-window bug)
@@ -10529,6 +10534,7 @@ async function loadChatThread(agentName) {
 
   const owner = chatOwnerName()
   const threadDisplayName = owner && agentName === owner ? owner + ' (te)' : chatDisplayName(agentName)
+  const isFreshPerTask = chatAgentSessionPolicy.get(agentName) === 'fresh-per-task'
 
   panel.innerHTML = `
     <div class="chat-thread-header">
@@ -10540,6 +10546,10 @@ async function loadChatThread(agentName) {
     </div>
     <div class="chat-bubbles" id="chatBubbles"><div class="chat-loading-indicator" id="chatLoadingTop" style="display:none;text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">${t('messages.loading')}</div></div>
     <div class="chat-compose">
+      ${isFreshPerTask ? `<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;font-size:11px;color:var(--text-muted)">
+        <span>${t('messages.fresh_task_hint')}</span>
+        <button type="button" class="btn-secondary btn-compact" id="chatNewTaskBtn">${t('messages.new_task_btn')}</button>
+      </div>` : ''}
       <div class="chat-compose-row">
         <textarea id="chatComposeText" class="chat-compose-input" rows="2" placeholder="${t('messages.placeholder', { agent: escapeHtml(chatDisplayName(agentName)) })}"></textarea>
         <button class="btn-primary btn-compact chat-send-btn" id="chatSendBtn">${t('messages.send_btn')}</button>
@@ -10548,6 +10558,11 @@ async function loadChatThread(agentName) {
   `
 
   document.getElementById('chatSendBtn')?.addEventListener('click', () => sendChatMessage(agentName))
+  document.getElementById('chatNewTaskBtn')?.addEventListener('click', () => {
+    localStorage.removeItem('chat_task_id_' + agentName)
+    showToast(t('messages.new_task_ready'))
+    document.getElementById('chatComposeText')?.focus()
+  })
   document.getElementById('chatComposeText')?.addEventListener('keydown', e => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendChatMessage(agentName) }
   })
@@ -10681,10 +10696,20 @@ async function sendChatMessage(toAgent) {
   if (btn) btn.disabled = true
   try {
     const from = await resolveOwnerName()
+    const freshPerTask = chatAgentSessionPolicy.get(toAgent) === 'fresh-per-task'
+    let taskId = null
+    if (freshPerTask) {
+      const key = 'chat_task_id_' + toAgent
+      taskId = localStorage.getItem(key)
+      if (!taskId) {
+        taskId = 'dashboard:' + crypto.randomUUID()
+        localStorage.setItem(key, taskId)
+      }
+    }
     const res = await fetch('/api/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ from, to: toAgent, content }),
+      body: JSON.stringify({ from, to: toAgent, content, ...(taskId ? { task_id: taskId } : {}) }),
     })
     if (!res.ok) { const err = await res.json(); throw new Error(err.error || 'Hiba') }
     if (textarea) textarea.value = ''

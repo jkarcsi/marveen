@@ -8,11 +8,23 @@ import {
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
-import { isKnownAgent } from '../agent-config.js'
+import { isKnownAgent, readAgentSessionPolicy } from '../agent-config.js'
+import { isAgentRunning, stopAgentProcess } from '../agent-process.js'
+import { removeDesiredAgent } from '../agent-desired-state.js'
 import { readBody, json } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
+import {
+  clearActiveAgentTask,
+  formatTaskHandoff,
+  normalizeTaskId,
+  persistTaskHandoff,
+  readActiveAgentTask,
+  taskIdForMessage,
+  validateTaskHandoff,
+  type TaskHandoff,
+} from '../fresh-task-policy.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
@@ -20,8 +32,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string }
+    const { from, to, content, origin_note, task_id } = JSON.parse(body.toString()) as
+      { from: string; to: string; content: string; origin_note?: string; task_id?: string }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
       return true
@@ -119,8 +131,19 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
-    logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
+    const normalizedTaskId = task_id === undefined ? null : normalizeTaskId(task_id)
+    if (task_id !== undefined && !normalizedTaskId) {
+      json(res, { error: 'task_id must be a non-empty string of at most 200 characters without control characters' }, 400)
+      return true
+    }
+    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, normalizedTaskId)
+    logger.info({
+      id: msg.id,
+      from: msg.from_agent,
+      to: msg.to_agent,
+      originNote: msg.origin_note,
+      taskId: msg.task_id,
+    }, 'Agent message created')
     json(res, msg)
     return true
   }
@@ -160,7 +183,46 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   if (msgUpdateMatch && method === 'PUT') {
     const id = parseInt(msgUpdateMatch[1], 10)
     const body = await readBody(req)
-    const { status: newStatus, result } = JSON.parse(body.toString()) as { status: string; result?: string }
+    const {
+      status: newStatus,
+      result,
+      task_complete: taskComplete,
+      handoff: rawHandoff,
+    } = JSON.parse(body.toString()) as {
+      status: string
+      result?: string
+      task_complete?: boolean
+      handoff?: unknown
+    }
+
+    const existing = getAgentMessage(id)
+    let completedTaskId: string | null = null
+    let completedHandoff: TaskHandoff | null = null
+    let handoffPath: string | null = null
+    if (taskComplete === true && existing && readAgentSessionPolicy(existing.to_agent) === 'fresh-per-task') {
+      completedTaskId = taskIdForMessage(existing.id, existing.task_id)
+      const active = readActiveAgentTask(existing.to_agent)
+      if (!active || active.taskId !== completedTaskId) {
+        json(res, {
+          error: `Cannot close task '${completedTaskId}': it is not the active task for ${existing.to_agent}`,
+        }, 409)
+        return true
+      }
+      const validation = validateTaskHandoff(rawHandoff)
+      if (!validation.ok) {
+        json(res, { error: validation.error }, 400)
+        return true
+      }
+      completedHandoff = validation.handoff
+      // Persist before changing DB status or stopping the session: a close can
+      // never succeed without its durable handoff already on disk.
+      handoffPath = persistTaskHandoff(
+        existing.to_agent,
+        completedTaskId,
+        existing.id,
+        completedHandoff,
+      )
+    }
 
     let ok = false
     if (newStatus === 'done') ok = markMessageDone(id, result)
@@ -174,12 +236,32 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       // when the original content is already a completion report).
       const done = getAgentMessage(id)
       if (done && done.from_agent !== done.to_agent && !done.content.startsWith('[Eredmény]')) {
-        const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
+        const summary = completedHandoff && handoffPath
+          ? `${result ? result.slice(0, 500) : '(nincs eredmény)'}\n\n[Durable handoff]\n${formatTaskHandoff(completedHandoff, handoffPath)}`
+          : result ? result.slice(0, 500) : '(nincs eredmény)'
         createAgentMessage(
           done.to_agent,
           done.from_agent,
           `[Eredmény] msg_id:${id} status:${newStatus}\n\n${summary}`,
+          null,
+          done.task_id,
         )
+      }
+      if (completedTaskId && done) {
+        clearActiveAgentTask(done.to_agent, completedTaskId)
+        // A fresh-per-task consultant is near-zero-idle by design. Clear any
+        // dashboard desired-state bit before stopping so the reconciler cannot
+        // immediately resurrect it with an empty session.
+        removeDesiredAgent(done.to_agent)
+        if (isAgentRunning(done.to_agent)) {
+          const stopped = stopAgentProcess(done.to_agent)
+          if (!stopped.ok) {
+            logger.warn(
+              { agent: done.to_agent, taskId: completedTaskId, error: stopped.error },
+              'fresh-per-task: handoff persisted and sent, but stopping the session failed',
+            )
+          }
+        }
       }
       json(res, { ok: true }); return true
     }

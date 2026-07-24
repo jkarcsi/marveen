@@ -34,6 +34,7 @@ import {
   writeAgentClaudePlan,
   readAgentMemoryIsolation,
   writeAgentMemoryIsolation,
+  readAgentSessionPolicy,
   readAgentClaudeConfigDir,
   readAgentRemoteConfig,
   readAgentRemoteHost,
@@ -42,6 +43,7 @@ import {
   writeAgentVoiceConfig,
   KNOWN_VOICE_MODELS,
   type AuthMode,
+  type AgentSessionPolicy,
 } from '../agent-config.js'
 import { readClaudePlans, resolveAgentConfigDir } from '../claude-plans.js'
 import {
@@ -323,6 +325,7 @@ interface AgentSummary {
   activeModel: string | null
   runningSince: number | null
   authMode: AuthMode
+  sessionPolicy: AgentSessionPolicy
   securityProfile: string
   /** Named Claude subscription plan id (see claude-plans.ts), or null when the
    *  agent uses the raw claudeConfigDir / default resolution. */
@@ -396,6 +399,7 @@ function getAgentSummary(name: string): AgentSummary {
     activeModel: running ? readActiveModelFromProjectDir(dir, runningSince ?? undefined, resolveAgentConfigDir(name).configDir ?? undefined) : null,
     runningSince,
     authMode: readAgentAuthMode(name),
+    sessionPolicy: readAgentSessionPolicy(name),
     securityProfile: readAgentSecurityProfile(name),
     claudePlan: readAgentClaudePlan(name),
     team: readAgentTeam(name),

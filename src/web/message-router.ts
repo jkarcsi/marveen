@@ -14,14 +14,22 @@ import {
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
 import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
-import { readAgentRemoteHost, readAgentVoiceConfig } from './agent-config.js'
+import { readAgentRemoteHost, readAgentSessionPolicy, readAgentVoiceConfig } from './agent-config.js'
 import {
   agentSessionName,
   isSessionReadyForPrompt,
   clearStaleParkedInput,
+  restartAgentProcess,
   sendPromptToSession,
+  startAgentProcess,
   sessionExistsOnHost,
 } from './agent-process.js'
+import {
+  decideTaskBoundary,
+  readActiveAgentTask,
+  taskIdForMessage,
+  writeActiveAgentTask,
+} from './fresh-task-policy.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
@@ -450,6 +458,12 @@ export async function runMessageRouterTick(): Promise<void> {
       const session = cached?.session ?? agentSessionName(msg.to_agent)
       const host = isMainAgent ? null : cached?.host ?? readAgentRemoteHost(msg.to_agent)
       const sessionExists = cached?.exists ?? sessionExistsOnHost(host, session)
+      const sessionPolicy = readAgentSessionPolicy(msg.to_agent)
+      const incomingTaskId = taskIdForMessage(msg.id, msg.task_id)
+      const activeTask = sessionPolicy === 'fresh-per-task'
+        ? readActiveAgentTask(msg.to_agent)
+        : null
+      const boundary = decideTaskBoundary(sessionPolicy, activeTask?.taskId ?? null, incomingTaskId)
 
       if (shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
         logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Agent message abandoned: target session absent for full retry window')
@@ -463,6 +477,27 @@ export async function runMessageRouterTick(): Promise<void> {
       }
 
       if (!sessionExists) {
+        if (boundary === 'fresh') {
+          const start = startAgentProcess(msg.to_agent, { fresh: true })
+          if (start.ok) {
+            writeActiveAgentTask(msg.to_agent, {
+              taskId: incomingTaskId,
+              sourceMessageId: msg.id,
+              fromAgent: msg.from_agent,
+              goal: msg.content.slice(0, 2000),
+            })
+            logger.info(
+              { id: msg.id, to: msg.to_agent, taskId: incomingTaskId },
+              'fresh-per-task: started fresh session for pending task; delivery deferred until ready',
+            )
+          } else if (!/already running/i.test(start.error ?? '')) {
+            logger.warn(
+              { id: msg.id, to: msg.to_agent, taskId: incomingTaskId, error: start.error },
+              'fresh-per-task: failed to auto-start task session; will retry',
+            )
+          }
+          continue
+        }
         if (!routerLoggedMisses.has(msg.id)) {
           logger.warn({ id: msg.id, to: msg.to_agent, session }, 'Agent message target session not running, will retry')
           routerLoggedMisses.add(msg.id)
@@ -510,6 +545,37 @@ export async function runMessageRouterTick(): Promise<void> {
 
       // Session is ready — clear stuck tracking.
       agentStuckSince.delete(msg.to_agent)
+
+      if (boundary === 'fresh') {
+        // Do not interrupt a live turn: this branch is reached only after the
+        // standard pane-ready check above. Once idle, replace the prior task's
+        // conversation with a brand-new Claude session and deliver next tick,
+        // after the new TUI has reached its prompt.
+        const restart = restartAgentProcess(msg.to_agent, { fresh: true })
+        if (restart.ok) {
+          writeActiveAgentTask(msg.to_agent, {
+            taskId: incomingTaskId,
+            sourceMessageId: msg.id,
+            fromAgent: msg.from_agent,
+            goal: msg.content.slice(0, 2000),
+          })
+          logger.info(
+            {
+              id: msg.id,
+              to: msg.to_agent,
+              previousTaskId: activeTask?.taskId ?? null,
+              taskId: incomingTaskId,
+            },
+            'fresh-per-task: task boundary detected; restarted fresh before injection',
+          )
+        } else {
+          logger.warn(
+            { id: msg.id, to: msg.to_agent, taskId: incomingTaskId, error: restart.error },
+            'fresh-per-task: boundary restart failed; message remains pending',
+          )
+        }
+        continue
+      }
 
       // Classify (channel-inbound / trusted-peer / untrusted) + reject an empty
       // from_agent -- SINGLE SOURCE in agent-message-wrap so the router and the
@@ -663,4 +729,3 @@ async function callVoiceSTT(fileId: string, agentId: string): Promise<string | n
     return null
   }
 }
-

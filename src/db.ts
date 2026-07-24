@@ -448,6 +448,14 @@ export function initDatabase(dbPathOverride?: string): void {
   } catch {
     // column already exists
   }
+  // Optional stable task boundary carried by inter-agent delegations. Agents
+  // with sessionPolicy=fresh-per-task use this to distinguish a continuation
+  // from a new independent task. NULL preserves the pre-policy message shape.
+  try {
+    db.exec('ALTER TABLE agent_messages ADD COLUMN task_id TEXT')
+  } catch {
+    // column already exists
+  }
 
   // One-time L1 backfill: federation system ids are now stored lowercase, but
   // rows written by a pre-L1 build (an install that federated with a
@@ -1803,18 +1811,28 @@ export interface AgentMessage {
   // sub-agent's own task/branch name) -- NOT an authentication mechanism,
   // see the table-creation comment. Null for every caller that doesn't pass one.
   origin_note: string | null
+  // Stable connected-task identifier (kanban card id or caller-provided token).
+  // Optional so every existing message producer remains backwards-compatible.
+  task_id: string | null
 }
 
-export function createAgentMessage(from: string, to: string, content: string, originNote?: string | null): AgentMessage {
+export function createAgentMessage(
+  from: string,
+  to: string,
+  content: string,
+  originNote?: string | null,
+  taskId?: string | null,
+): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note) VALUES (?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, task_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, taskId ?? null)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
     result: null, created_at: now, delivered_at: null, completed_at: null,
     origin_note: originNote ?? null,
+    task_id: taskId ?? null,
   }
 }
 
@@ -2968,4 +2986,3 @@ export function expireTimedOutApprovals(): number {
     WHERE status = 'pending' AND timeout_at IS NOT NULL AND timeout_at <= ?
   `).run(now, now).changes
 }
-

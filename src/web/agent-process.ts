@@ -19,7 +19,20 @@ import {
   detectsModelConsentDialog,
   type FirstRunGateKind,
 } from '../pane-state.js'
-import { agentDir, listAgentNames, readAgentModel, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentMemoryIsolation } from './agent-config.js'
+import {
+  agentDir,
+  listAgentNames,
+  readAgentModel,
+  readAgentClaudeConfigDir,
+  readAgentClaudePlan,
+  readAgentChannelProvider,
+  readAgentAuthMode,
+  readAgentDisplayName,
+  readAgentRemoteConfig,
+  readAgentRemoteHost,
+  readAgentMemoryIsolation,
+  readAgentSessionPolicy,
+} from './agent-config.js'
 import { resolveAgentConfigDir } from './claude-plans.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
 import { renameSharedCredentialsIfSafe } from './claude-credentials-guard.js'
@@ -821,12 +834,21 @@ function startRemoteAgentProcess(
 export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}): { ok: boolean; pid?: number; error?: string } {
   const dir = agentDir(name)
   if (!existsSync(dir)) return { ok: false, error: 'Agent not found' }
+  // A fresh-per-task agent must never be resurrected by an incidental
+  // auto-start (scheduler, reauth healer, desired-state monitor, etc.) with
+  // --continue. The message router still keeps the live session for additional
+  // messages carrying the same task id; this override only applies when a
+  // process is actually launched/relaunched.
+  const effectiveOpts = {
+    ...opts,
+    fresh: opts.fresh === true || readAgentSessionPolicy(name) === 'fresh-per-task',
+  }
 
   // Remote agents are handled entirely by the ssh path above (with its own
   // start guard), before any local already-running check / scaffolding.
   const remote = readAgentRemoteConfig(name)
   if (remote.host && remote.workdir) {
-    return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
+    return startRemoteAgentProcess(name, remote.host, remote.workdir, effectiveOpts)
   }
 
   // Opt-in per-agent auto-memory isolation (local agents only; a remote
@@ -1144,7 +1166,7 @@ export function startAgentProcess(name: string, opts: { fresh?: boolean } = {}):
     // agents are ALWAYS launched fresh: the lost conversation context is the
     // price of a reachable bot (file/db memory persists either way). Channel-
     // less agents keep --continue to preserve their accumulated context.
-    const continueFlag = (hasPriorSession && !opts.fresh && !hasChannel) ? '--continue ' : ''
+    const continueFlag = (hasPriorSession && !effectiveOpts.fresh && !hasChannel) ? '--continue ' : ''
     const stateEnvVar = agentProvider === 'slack' ? 'SLACK_STATE_DIR' : agentProvider === 'discord' ? 'DISCORD_STATE_DIR' : agentProvider === 'googlechat' ? 'GOOGLECHAT_STATE_DIR' : agentProvider === 'teams' ? 'TEAMS_STATE_DIR' : 'TELEGRAM_STATE_DIR'
     const unsetTokens = 'unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN'
     // Slack plugin is third-party; its "not on approved allowlist" check is
@@ -1969,4 +1991,3 @@ export async function clearStaleParkedInput(session: string, host: string | null
   logger.warn({ session, parked: parked.slice(0, 60) }, 'message-router: cleared stale parked input (channel un-wedge)')
   return true
 }
-

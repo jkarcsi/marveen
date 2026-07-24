@@ -14,7 +14,7 @@ import {
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS } from '../../config.js'
-import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
+import { listAgentNames, readAgentDisplayName, readAgentSessionPolicy } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatchTarget } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
@@ -46,6 +46,17 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   // not to the human).
   const isMainAgent = target === MAIN_AGENT_ID
   const escalateTo = isMainAgent ? OWNER_NAME : MAIN_AGENT_ID
+  const freshTaskClose = readAgentSessionPolicy(target) === 'fresh-per-task'
+    ? [
+        '',
+        '3) UTOLSÓ lépésként zárd le az agent taskot a kapott inter-agent üzenet msg_id-jével. Ez tartós handoffot ír, visszaküldi a delegálónak, majd leállítja a sessiont:',
+        `  curl -s -X PUT ${base}/api/messages/<KAPOTT_MSG_ID> \\`,
+        `    ${auth} \\`,
+        `    -H 'Content-Type: application/json' \\`,
+        `    -d '{"status":"done","result":"AZ EREDMENY ROVIDEN","task_complete":true,"handoff":{"goal":"A FELADAT CELJA","decisions":["DONTES"],"files":["/abszolut/vagy/repo/utvonal"],"openQuestions":[],"nextStep":"KOVETKEZO LEHETSEGES LEPES"}}'`,
+        'Ezt tényleg utoljára hívd: a sikeres task-close után a saját tmux sessionöd leáll.',
+      ]
+    : []
   return [
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
@@ -72,6 +83,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     isMainAgent
       ? `Ez azért kritikus, mert ${OWNER_NAME} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű, homályos kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`
       : `FONTOS: ${OWNER_NAME}-hez (az operátorhoz) EGYENESEN NE told át a kártyát, még ha a blokk végül tőle igényel is döntést -- ${MAIN_AGENT_ID} a delegálód, ő triázsol és ő dönti el, hogy tovább kell-e ${OWNER_NAME}-hez eszkalálnia. Ez azért kritikus, mert ${MAIN_AGENT_ID} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`,
+    ...freshTaskClose,
     'A "done"-t mindenképp te jelezd — a dashboard csak az in_progress/waiting állapotot követi automatikusan a session aktivitásából. Az eredmény-kommentet (1) ne hagyd ki: az a kártyán a látható eredmény.',
   ].join('\n')
 }
@@ -94,7 +106,7 @@ function fireKanbanDispatch(id: string): void {
     if (!target) return
     const desc = (card.description ?? '').trim()
     const content = `[Kanban feladat #${id}]: ${card.title}${desc ? ' — ' + desc : ''}\n\n${kanbanMoveInstructions(id, target)}`
-    createAgentMessage(MAIN_AGENT_ID, target, content)
+    createAgentMessage(MAIN_AGENT_ID, target, content, null, id)
     markKanbanCardDispatched(id)
     logger.info({ id, target, assignee: card.assignee }, 'Kanban in_progress dispatch fired')
   } catch (err) {

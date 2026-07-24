@@ -74,6 +74,46 @@ export function writeAgentModel(name: string, model: string): void {
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
 
+export type AgentSessionPolicy = 'continue' | 'fresh-per-task'
+
+const VALID_SESSION_POLICIES = new Set<AgentSessionPolicy>(['continue', 'fresh-per-task'])
+
+/**
+ * Resolve the optional per-agent session policy from raw agent-config JSON.
+ *
+ * Missing, malformed, and unknown values deliberately fall back to `continue`,
+ * which is the launch behavior every existing dashboard agent had before this
+ * setting was introduced.
+ */
+export function resolveAgentSessionPolicy(rawConfigJson: string): AgentSessionPolicy {
+  try {
+    const config = JSON.parse(rawConfigJson) as Record<string, unknown>
+    const value = config?.sessionPolicy
+    return typeof value === 'string' && VALID_SESSION_POLICIES.has(value as AgentSessionPolicy)
+      ? value as AgentSessionPolicy
+      : 'continue'
+  } catch {
+    return 'continue'
+  }
+}
+
+export function readAgentSessionPolicy(name: string): AgentSessionPolicy {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  return resolveAgentSessionPolicy(readFileOr(configPath, '{}'))
+}
+
+export function writeAgentSessionPolicy(name: string, policy: AgentSessionPolicy): void {
+  if (!VALID_SESSION_POLICIES.has(policy)) {
+    throw new Error(`Invalid agent session policy: ${policy}`)
+  }
+  const configPath = join(agentDir(name), 'agent-config.json')
+  let config: Record<string, unknown> = {}
+  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  if (policy === 'continue') delete config.sessionPolicy
+  else config.sessionPolicy = policy
+  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+}
+
 export function readAgentDisplayName(name: string): string {
   const configPath = join(agentDir(name), 'agent-config.json')
   try {
