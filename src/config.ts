@@ -117,6 +117,19 @@ export function brandSlug(raw: string): string {
 // fall back to "marveen" so nothing breaks when upgrading in place.
 export const MAIN_AGENT_ID = env['MAIN_AGENT_ID'] ?? 'marveen'
 
+// Reserved routing id for the dashboard's DIRECT owner<->agent chat. The
+// operator composing from the Messages tab is neither a fleet sub-agent (no
+// agents/<id>/ dir) nor the live main agent -- addressing the main agent would
+// route the recipient's reply INTO the channels session and conflate the
+// operator's private chat with inter-agent traffic. This id is a display-only
+// sink: isKnownAgent() accepts it so the /api/messages from-auth guard passes,
+// but it never has a tmux session, so the message-router marks any reply to it
+// delivered and never tries to inject/abandon/surface it. OWNER_NAME is the
+// human label; this is the stable slug (sanitize-safe, ASCII, no collision
+// with COORDINATOR_AGENT_ID). Kept in sync with the client copy in web/app.js
+// (asserted by owner-console-chat.test.ts).
+export const OWNER_CONSOLE_ID = 'owner'
+
 // Identifier the OS service manager uses for the main agent's units (launchd
 // label com.<id>.channels / com.<id>.dashboard, systemd <id>-channels, etc.).
 // The installer derives this from BRAND_NAME when the operator picks a brand

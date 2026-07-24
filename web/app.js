@@ -92,6 +92,12 @@ function mainAgentId() {
   return window._marveen?.agentId || 'marveen'
 }
 
+// Reserved routing id for the dashboard's DIRECT owner<->agent chat. Must stay
+// byte-identical to OWNER_CONSOLE_ID in src/config.ts (asserted by
+// owner-console-chat.test.ts). Composing as this id (instead of the live main
+// agent) keeps the operator's private chat out of the channels session.
+const OWNER_CONSOLE_ID = 'owner'
+
 (() => {
   const TOKEN_KEY = 'marveen-dashboard-token'
   const urlParams = new URLSearchParams(window.location.search)
@@ -10510,7 +10516,9 @@ function mainAgentDisplayName() {
 // its BOT_NAME display name; every other agent already carries a human name as
 // its id, so it passes through unchanged.
 function chatDisplayName(name) {
-  return name === mainAgentId() ? mainAgentDisplayName() : name
+  if (name === mainAgentId()) return mainAgentDisplayName()
+  if (name === OWNER_CONSOLE_ID) return chatOwnerName() || 'Owner'
+  return name
 }
 
 function chatLastSeenKey(agentName) { return 'chat_last_seen_' + agentName }
@@ -10713,10 +10721,13 @@ async function loadChatThread(agentName) {
 }
 
 function buildBubbleHtml(m) {
-  const isOutgoing = m.from_agent === mainAgentId()
+  // Outgoing = the operator's own side. That is the reserved owner-console id
+  // for direct chats; the main agent id is kept too so legacy threads (and the
+  // operator-as-proxy history) still render on the right.
+  const isOutgoing = m.from_agent === OWNER_CONSOLE_ID || m.from_agent === mainAgentId()
   // senderName stays the routing id (avatar lookup keys off it); senderLabel is
   // what the user sees, so the main agent reads as its BOT_NAME, not "marveen".
-  const senderName = isOutgoing ? mainAgentId() : m.from_agent
+  const senderName = m.from_agent
   const senderLabel = chatDisplayName(senderName)
   const when = m.created_at ? new Date(m.created_at * 1000).toLocaleString('hu-HU', {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}) : ''
   const statusMetaRaw = MSG_STATUS_META[m.status] || { label: m.status || '', cls: 'badge' }
@@ -10734,7 +10745,7 @@ function buildBubbleHtml(m) {
       <div class="bubble-text">${escapeHtml(m.content || '')}</div>
       <div class="bubble-time">${when}</div>
     </div>
-    ${isOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(mainAgentId(), 28)}</div>` : ''}
+    ${isOutgoing ? `<div class="chat-bubble-avatar">${chatAvatarHtml(senderName, 28)}</div>` : ''}
   </div>`
 }
 
@@ -10813,13 +10824,14 @@ async function sendChatMessage(toAgent) {
   if (!content) { textarea?.focus(); return }
   if (btn) btn.disabled = true
   try {
-    // The operator composes through the dashboard AS the main agent: `from`
-    // must be a registered fleet agent id (the /api/messages guard rejects any
-    // unregistered sender, e.g. the raw owner name "Karesz"), and the
-    // recipient's reply has to route back to a real agent inbox. The main
-    // agent (marveen) is the owner's proxy in the fleet; the chat renders
-    // outgoing bubbles under the owner label regardless of this routing id.
-    const from = mainAgentId()
+    // The operator composes as the reserved OWNER_CONSOLE_ID, NOT the live main
+    // agent: `from` must pass the /api/messages from-auth guard (it rejects the
+    // raw owner name "Karesz"), but addressing the main agent would route the
+    // recipient's reply INTO the channels session and conflate this private
+    // chat with inter-agent traffic. The owner-console id is a display-only
+    // sink -- the router persists replies to it without ever delivering them to
+    // a session, so the thread stays a direct owner<->agent conversation.
+    const from = OWNER_CONSOLE_ID
     const freshPerTask = chatAgentSessionPolicy.get(toAgent) === 'fresh-per-task'
     let taskId = null
     if (freshPerTask) {

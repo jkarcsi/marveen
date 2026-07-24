@@ -1,7 +1,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, MAIN_AGENT_ID } from '../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, OWNER_CONSOLE_ID } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { safeJoin } from './sanitize.js'
 import {
@@ -661,6 +661,10 @@ export function writeAgentVoiceConfig(name: string, patch: Partial<AgentVoiceCon
 export function isKnownAgent(name: string): boolean {
   if (!name) return false
   if (name === MAIN_AGENT_ID) return true
+  // The dashboard's direct owner<->agent chat composes as this reserved id; it
+  // has no agents/<id>/ dir but is a first-class (display-only) sender so the
+  // from-auth guard accepts it. The router treats it as a non-deliverable sink.
+  if (name === OWNER_CONSOLE_ID) return true
   try {
     const dir = agentDir(name)
     return existsSync(dir) && statSync(dir).isDirectory()

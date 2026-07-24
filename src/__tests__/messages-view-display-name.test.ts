@@ -40,6 +40,10 @@ function loadHelpers(win: Record<string, unknown>, mainId: string) {
   }
   const body = `
     function mainAgentId() { return MAIN_ID }
+    // chatDisplayName references the module-level OWNER_CONSOLE_ID const, which
+    // lives outside the extracted function body -- mirror it here (byte-identical
+    // to web/app.js, itself pinned to src/config.ts by owner-console-chat.test.ts).
+    const OWNER_CONSOLE_ID = 'owner'
     ${displayFn}
     ${chatFn}
     return { mainAgentDisplayName, chatDisplayName }

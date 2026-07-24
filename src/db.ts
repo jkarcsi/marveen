@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, OWNER_CONSOLE_ID } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
@@ -1947,7 +1947,9 @@ export function listAgentMessages(limit = 50): AgentMessage[] {
 // heartbeat or the coordinator), but messages involving them still count toward
 // the human/agent peer they are paired with (so a thread's count matches what
 // getAgentConversation returns when you open it).
-export const CHAT_SYSTEM_AGENTS = ['heartbeat', 'telegram-coordinator', 'channel-coordinator', 'system'] as const
+// OWNER_CONSOLE_ID is the operator's own side of the dashboard direct chat, not
+// a peer to list -- excluded so it never renders as its own sidebar thread.
+export const CHAT_SYSTEM_AGENTS = ['heartbeat', 'telegram-coordinator', 'channel-coordinator', 'system', OWNER_CONSOLE_ID] as const
 
 const AGENT_MESSAGE_LIMIT_CAP = 200
 

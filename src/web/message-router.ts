@@ -1,5 +1,5 @@
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID } from '../config.js'
+import { MAIN_AGENT_ID, OWNER_CONSOLE_ID } from '../config.js'
 import { resolveAgentChannelStateDir } from './voice-directive.js'
 import {
   getPendingMessages,
@@ -364,7 +364,12 @@ export async function runMessageRouterTick(): Promise<void> {
     // main loop can reuse them instead of re-calling sessionExistsOnHost.
     const receiversInTick = new Set<string>()
     for (const m of pending) {
-      if (m.to_agent !== MAIN_AGENT_ID) receiversInTick.add(m.to_agent)
+      // MAIN_AGENT_ID drains via the pull model; OWNER_CONSOLE_ID is a
+      // display-only sink (dashboard direct chat) with no tmux session -- both
+      // are excluded from the session-presence probe below.
+      if (m.to_agent !== MAIN_AGENT_ID && m.to_agent !== OWNER_CONSOLE_ID) {
+        receiversInTick.add(m.to_agent)
+      }
     }
     const absentNow = new Set<string>()
     const presentNow = new Set<string>()
@@ -449,6 +454,17 @@ export async function runMessageRouterTick(): Promise<void> {
           } catch (err) {
             logger.warn({ err }, 'message-router: main-agent wakeup injection failed')
           }
+        }
+        continue
+      }
+      // OWNER_CONSOLE_ID is the dashboard direct-chat sink: no tmux session,
+      // no owner to wake. A reply an agent addressed here (to_agent = owner)
+      // must NOT enter the deliver/abandon/handoff-failure machinery -- it just
+      // needs to persist for the Messages tab to render. Mark it delivered so
+      // it leaves the pending queue and the router never touches it again.
+      if (msg.to_agent === OWNER_CONSOLE_ID) {
+        if (!markMessageDelivered(msg.id)) {
+          logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows for owner-console message')
         }
         continue
       }
