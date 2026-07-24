@@ -96,7 +96,7 @@ function mainAgentId() {
 // byte-identical to OWNER_CONSOLE_ID in src/config.ts (asserted by
 // owner-console-chat.test.ts). Composing as this id (instead of the live main
 // agent) keeps the operator's private chat out of the channels session.
-const OWNER_CONSOLE_ID = 'owner'
+const OWNER_CONSOLE_ID = 'owner';
 
 (() => {
   const TOKEN_KEY = 'marveen-dashboard-token'
