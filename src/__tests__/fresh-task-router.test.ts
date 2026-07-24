@@ -28,6 +28,7 @@ vi.mock('../db.js', () => ({
 
 vi.mock('../web/agent-config.js', () => ({
   readAgentRemoteHost: () => null,
+  readAgentRuntime: () => 'claude-tui',
   readAgentSessionPolicy: () => 'fresh-per-task',
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
 }))
